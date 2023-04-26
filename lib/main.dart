@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:graphql_flutter/graphql_flutter.dart';
 
 void main() async {
@@ -17,97 +18,135 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         primarySwatch: Colors.blue,
       ),
-      home: const MyHomePage(title: 'GraphQL Demo'),
+      home: BlocProvider(
+        create: (context) => CharacterBloc(),
+        child: const MyHomePage(title: 'GraphQL Demo'),
+      ),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({Key? key, required this.title}) : super(key: key);
+class MyHomePage extends StatelessWidget {
+  const MyHomePage({
+    Key? key,
+    required this.title,
+  }) : super(key: key);
   final String title;
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-  List<dynamic> characters = [];
-  bool _loading = false;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.title),
+        title: Text(title),
       ),
-      body: _loading
-          ? const CircularProgressIndicator()
-          : characters.isEmpty
-              ? Center(
-                  child: ElevatedButton(
-                    child: const Text("Fetch Data"),
-                    onPressed: () {
-                      fetchData();
-                    },
-                  ),
-                )
-              : Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: ListView.builder(
-                      itemCount: characters.length,
-                      itemBuilder: (context, index) {
-                        return Card(
-                          child: ListTile(
-                            leading: Image(
-                              image: NetworkImage(
-                                characters[index]['image'],
-                              ),
-                            ),
-                            title: Text(
-                              characters[index]['name'],
-                            ),
+      body: BlocBuilder<CharacterBloc, CharacterState>(
+        builder: (context, state) {
+          if (state is CharacterInitial) {
+            return Center(
+              child: ElevatedButton(
+                child: const Text("Fetch Data"),
+                onPressed: () {
+                  BlocProvider.of<CharacterBloc>(context)
+                      .add(FetchCharacterDataEvent());
+                },
+              ),
+            );
+          } else if (state is CharacterLoading) {
+            return const CircularProgressIndicator();
+          } else if (state is CharacterLoaded) {
+            return Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: ListView.builder(
+                  itemCount: state.characters.length,
+                  itemBuilder: (context, index) {
+                    return Card(
+                      child: ListTile(
+                        leading: Image(
+                          image: NetworkImage(
+                            state.characters[index]['image'],
                           ),
-                        );
-                      }),
-                ),
+                        ),
+                        title: Text(
+                          state.characters[index]['name'],
+                        ),
+                      ),
+                    );
+                  }),
+            );
+          } else if (state is CharacterError) {
+            return Center(
+              child: Text(state.errorMessage),
+            );
+          }
+          return const SizedBox.shrink();
+        },
+      ),
     );
   }
+}
 
-  void fetchData() async {
-    setState(() {
-      _loading = true;
-    });
-    HttpLink link = HttpLink("https://rickandmortyapi.com/graphql");
-    GraphQLClient qlClient = GraphQLClient(
-      link: link,
-      cache: GraphQLCache(
-        store: HiveStore(),
-      ),
-    );
-    QueryResult queryResult = await qlClient.query(
-      QueryOptions(
-        document: gql(
-          """query {
-  characters() {
-    results {
-      name
-      image 
+class CharacterBloc extends Bloc<CharacterEvent, CharacterState> {
+  CharacterBloc() : super(CharacterInitial()) {
+    on<FetchCharacterDataEvent>(_onFetchCharacterDataEvent);
+  }
+
+  Future<void> _onFetchCharacterDataEvent(
+      FetchCharacterDataEvent event, Emitter<CharacterState> emit) async {
+    emit(CharacterLoading());
+    try {
+      HttpLink link = HttpLink("https://rickandmortyapi.com/graphql");
+      GraphQLClient qlClient = GraphQLClient(
+        link: link,
+        cache: GraphQLCache(
+          store: HiveStore(),
+        ),
+      );
+      QueryResult queryResult = await qlClient.query(
+        QueryOptions(
+          document: gql("""
+            query {
+              characters(page: 1) {
+                results {
+                  name
+                  image
+                }
+              }
+            }
+            """),
+        ),
+      );
+
+      if (queryResult.hasException) {
+        throw Exception(queryResult.exception!.graphqlErrors.toString());
+      }
+
+      List<dynamic> characters = queryResult.data!['characters']['results'];
+
+      emit(CharacterLoaded(characters: characters));
+    } catch (e) {
+      emit(CharacterError(errorMessage: e.toString()));
     }
   }
-  
-}""",
-        ),
-      ),
-    );
+}
 
-// queryResult.data  // contains data
-// queryResult.exception // will give what exception you got /errors
-// queryResult.hasException // you can check if you have any exception
+abstract class CharacterEvent {}
 
-// queryResult.context.entry<HttpLinkResponseContext>()?.statusCode  // to get status code of response
+class FetchCharacterDataEvent extends CharacterEvent {}
 
-    setState(() {
-      characters = queryResult.data!['characters']['results'];
-      _loading = false;
-    });
-  }
+abstract class CharacterState {}
+
+class CharacterInitial extends CharacterState {}
+
+class CharacterLoading extends CharacterState {}
+
+class CharacterLoaded extends CharacterState {
+  final List<dynamic> characters;
+
+  CharacterLoaded({required this.characters});
+}
+
+class CharacterError extends CharacterState {
+  final String errorMessage;
+
+  CharacterError({required this.errorMessage});
 }
